@@ -23,14 +23,14 @@ class DiscriminatorModel(tf.keras.Model):
         # FINAL DENSE *must* be named "dense" for ckpt:
         self.dense = tf.keras.layers.Dense(1, dtype="float32", name="dense")
 
-    def call(self, inputs, training=False, return_embedding=False):
+    def call(self, inputs, training=False, return_features=False):
         x = tf.cast(inputs, tf.float32)          # [B, 1, L, V]
         x = self.act1(self.conv1(x))
         x = self.act2(self.conv2(x))
         x = self.act3(self.conv3(x))
         pooled = self.global_pool(x)             # [B, C]
         out    = self.dense(pooled)              # [B, 1]
-        if return_embedding:
-            # if you ever ask for it, just return pooled features
-            return pooled
-        return tf.reshape(out, [-1])
+        out    = tf.reshape(out, [-1])
+        if return_features:
+            return out, pooled
+        return out

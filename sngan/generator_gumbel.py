@@ -1,7 +1,7 @@
 # gan/sngan/generator_gumbel.py
 import tensorflow as tf
 from tensorflow_probability.python.distributions import RelaxedOneHotCategorical
-from gan.common.model.ops import (
+from common.model.ops import (
     SNConv2D, SNConv2DTranspose, SNLinear, FinalBN, BatchNorm, leaky_relu, ResBlock
 )
 
