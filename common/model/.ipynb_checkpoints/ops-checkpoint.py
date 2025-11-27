@@ -150,7 +150,7 @@ class SNConv2D(tf.keras.layers.Layer):
         w_sn = tf.reshape(w_mat / (sigma + eps), tf.shape(w))
         return w_sn + 0.0 * (w - tf.stop_gradient(w))
 
-    def call(self, x):
+    def call(self, x, training=False):
         x = tf.cast(x, self.w.dtype)
         w_use = tf.cond(self.disable_sn, lambda: self.w, lambda: self._spectral_norm(self.w))
         return tf.nn.conv2d(x, w_use, strides=[1, *self.strides, 1], padding=self.padding)
@@ -211,7 +211,7 @@ class SNConv2DTranspose(tf.keras.layers.Layer):
         w_sn = tf.reshape(w_mat / (sigma + eps), tf.shape(w))
         return w_sn + 0.0 * (w - tf.stop_gradient(w))
 
-    def call(self, x):
+    def call(self, x, training=False):
         x = tf.cast(x, self.w.dtype)
         w_use = tf.cond(self.disable_sn, lambda: self.w, lambda: self._spectral_norm(self.w))
         b = tf.shape(x)[0]

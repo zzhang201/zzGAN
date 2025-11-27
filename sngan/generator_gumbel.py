@@ -5,7 +5,7 @@ from common.model.ops import (
     SNConv2D, SNConv2DTranspose, SNLinear, FinalBN, BatchNorm, leaky_relu, ResBlock
 )
 
-NUM_AMINO_ACIDS = 21  # keep consistent with your pipeline
+NUM_AMINO_ACIDS = 21 
 
 class GumbelGenerator(tf.keras.Model):
     def __init__(self, config, shape, num_classes=None, name="generator"):
@@ -24,7 +24,7 @@ class GumbelGenerator(tf.keras.Model):
         self.initial_width = self.width // (2 ** self.number_of_layers)
         self.initial_shape = (1, self.initial_width, self.starting_dim)
 
-        # ---- Bookends (these have weights in your 0724 ckpt) ----
+        # ---- Bookends ----
         self.noise_fc = SNLinear(
             units=self.initial_shape[0] * self.initial_shape[1] * self.initial_shape[2],
             name="noise_fc", dtype="float32"
@@ -39,84 +39,81 @@ class GumbelGenerator(tf.keras.Model):
         ]
 
         self.final_bn  = FinalBN(name="final_bn")
-        # Last conv must expose: generator/last_conv/{w,u}
         self.last_conv = SNConv2D(filters=NUM_AMINO_ACIDS, kernel_size=(1, 1),
                                   name="last_conv", dtype="float32")
 
-        # ---- Attention & LayerNorm (ckpt has attn_ln/{beta,gamma}) ----
+        # ---- Attention & LayerNorm ----
         self.attn = tf.keras.layers.MultiHeadAttention(num_heads=2, key_dim=64,
                                                        name="attn", dtype="float32")
         self.attn_ln = tf.keras.layers.LayerNormalization(name="attn_ln", dtype="float32")
 
         # Control
-        self.attn_block_index = config.attn_pos  # e.g., index where width is 40 or 80
+        self.attn_block_index = config.attn_pos 
         self.last_attn_scores = None
         self.last_logits = None
         self.last_probs = None
 
     def _get_hidden_dim_for_layer(self, layer_id):
-        """
-        Calculates the number of channels for a given ResBlock layer.
-        
-        The channel dimension doubles for the last two layers.
-        """
-        # The layer index at which the dimension doubles
         doubling_point = self.number_of_layers - 2
-        
         if layer_id >= doubling_point:
             return self.starting_dim * 2
         else:
             return self.starting_dim
             
     def build(self, input_shape):
-        """
-        Explicitly build the MHA layer to ensure its weights are tracked.
-        """
-        # Determine the shape of the tensor at the attention block's position
-        h = tf.TensorShape([self.batch_size, *self.initial_shape]) # Start with initial shape
-        
-        # Simulate the shape transformation through the ResBlocks
+        # ... (Same as your original code) ...
+        h = tf.TensorShape([self.batch_size, *self.initial_shape]) 
         for i, block in enumerate(self.res_blocks):
             h = block.compute_output_shape(h)
             if i == self.attn_block_index:
-                # At the attention block, the shape is [B, 1, W, C]
-                # MHA expects [B, W, C], so we get that shape
                 b, _, w, c = h
                 attn_input_shape = tf.TensorShape([b, w, c])
-                
-                # Build the attention layer with the correct input shape
                 if not self.attn.built:
                     self.attn.build(query_shape=attn_input_shape,
                                     value_shape=attn_input_shape,
                                     key_shape=attn_input_shape)
-                break # No need to continue the loop
-        
-        # Ensure the model's built state is set to True
+                break 
         super().build(input_shape)
     
     def get_strides(self):
-        # 1 x 5 -> 1 x 160 via five (1,2) upscales
         return [(1, 2)] * 5
 
     def get_temperature(self, training=True):
         if not training:
             return tf.constant(0.5, dtype=tf.float32)
     
-        # Schedule parameters (see notes below)
         start_temp  = tf.constant(1.0, dtype=tf.float32)
         end_temp    = tf.constant(0.5, dtype=tf.float32)
-        target_steps = tf.constant(100_000.0, dtype=tf.float32)  # reach end_temp ~at 100k G steps
+        target_steps = tf.constant(100_000.0, dtype=tf.float32) 
     
-        # Compute decay so that start*exp(-decay * target_steps) == end_temp
         decay = tf.math.log(start_temp / end_temp) / target_steps
-    
-        # Read the (non-trackable) global step injected from Protein
         step = tf.cast(getattr(self, "global_step", 0), tf.float32)
     
         tau = start_temp * tf.exp(-decay * step)
         return tf.maximum(end_temp, tau)
 
 
+    def _add_gps(self, x):
+        """
+        Helper: Injects a linear coordinate ramp (-1 to 1) 
+        matching the current shape of x.
+        """
+        # x shape: [Batch, 1, Width, Channels]
+        shape = tf.shape(x)
+        batch_size = shape[0]
+        width = shape[2]
+        
+        # 1. Create Linear Ramp
+        pos = tf.linspace(-1.0, 1.0, width) # [Width]
+        pos = tf.reshape(pos, [1, 1, width, 1]) # [1, 1, W, 1]
+        pos = tf.cast(pos, dtype=x.dtype)
+        
+        # 2. Tile to batch size
+        pos = tf.tile(pos, [batch_size, 1, 1, 1])
+        
+        # 3. Concatenate
+        return tf.concat([x, pos], axis=-1)
+        
     def call(self, z, training=False, return_hard=False, return_attention=False, return_embedding=False):
         # Keep compute in fp32 inside; SN vars are fp32
         z = tf.cast(z, tf.float32)
@@ -125,34 +122,37 @@ class GumbelGenerator(tf.keras.Model):
         h = self.noise_fc(z)
         h = tf.reshape(h, (tf.shape(z)[0], *self.initial_shape))  # [B, 1, W0, C]
 
-        # Reset logs
+        # =========================================================
+        # === GPS / POSITIONAL ENCODING (The "Coordinate Grid") ===
+        # =========================================================
+        # === INJECTION 1: The Coarse GPS (Length 5) ===
+        h = self._add_gps(h) 
+
         self.last_attn_scores = None
-        self.last_logits = None
-        self.last_probs = None
-
-        # Residual stack + optional attention block
+        
+        # 2. Loop through ResBlocks
         for i, block in enumerate(self.res_blocks):
-            h = block(h, training=training)  # [B, 1, Wi, Ci]
+            
+            # === INJECTION 2...N: The Fine GPS ===
+            h = block(h, training=training) # Upsamples (e.g., 5 -> 10)
+            h = self._add_gps(h) 
 
+            # Attention Logic
             if i == self.attn_block_index:
-                # reshape to [B, Wi, Ci] for MHA along width
                 h_shape = tf.shape(h)
-                h_flat = tf.reshape(h, [h_shape[0], h_shape[2], h_shape[3]])  # [B, W, C]
+                h_flat = tf.reshape(h, [h_shape[0], h_shape[2], h_shape[3]]) 
                 h_attn, scores = self.attn(h_flat, h_flat, h_flat,
-                                           return_attention_scores=True, training=training)
+                                             return_attention_scores=True, training=training)
                 h = self.attn_ln(h_flat + h_attn, training=training)
                 if return_attention:
-                    # scores: [B, num_heads, W, W]
                     self.last_attn_scores = scores
-                # back to [B, 1, W, C]
                 h = tf.reshape(h, [h_shape[0], 1, h_shape[2], h_shape[3]])
 
-        # Final BN + nonlinearity
+        # Final processing
         h = self.final_bn(h, training=training)
         h = leaky_relu(h, alpha=0.2)
 
         if return_embedding:
-            # Global average across spatial dims (B, C)
             return tf.reduce_mean(h, axis=[1, 2])
 
         # Project to vocab logits
@@ -170,4 +170,3 @@ class GumbelGenerator(tf.keras.Model):
             dist = RelaxedOneHotCategorical(temperature=temperature, logits=logits)
             soft = dist.sample()
             return soft  # [B, 1, W, V]
-

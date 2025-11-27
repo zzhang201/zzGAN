@@ -1,8 +1,8 @@
 import tensorflow as tf
 import importlib
-from gan.protein.protein import Protein
-from gan.wgan.model import WGAN
-from gan.sngan.generator_gumbel import GumbelGenerator
+from protein.protein import Protein
+from wgan.model import WGAN
+from sngan.generator_gumbel import GumbelGenerator
 
 def get_model(flags, logdir, noise):
     if flags.model_type == "wgan":

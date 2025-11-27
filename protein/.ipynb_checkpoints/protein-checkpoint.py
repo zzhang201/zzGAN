@@ -1,6 +1,6 @@
 import tensorflow as tf
-from gan.sngan.generator_gumbel import GumbelGenerator
-from gan.wgan.discriminator import DiscriminatorModel
+from sngan.generator_gumbel import GumbelGenerator
+from wgan.discriminator import DiscriminatorModel
 from tensorflow.keras.mixed_precision import LossScaleOptimizer
 NUM_AMINO_ACIDS = 21
 
