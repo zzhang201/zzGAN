@@ -65,14 +65,6 @@ class GumbelGenerator(tf.keras.Model):
         h = tf.TensorShape([self.batch_size, *self.initial_shape]) 
         for i, block in enumerate(self.res_blocks):
             h = block.compute_output_shape(h)
-            if i == self.attn_block_index:
-                b, _, w, c = h
-                attn_input_shape = tf.TensorShape([b, w, c])
-                if not self.attn.built:
-                    self.attn.build(query_shape=attn_input_shape,
-                                    value_shape=attn_input_shape,
-                                    key_shape=attn_input_shape)
-                break 
         super().build(input_shape)
     
     def get_strides(self):
