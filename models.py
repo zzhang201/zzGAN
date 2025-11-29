@@ -5,20 +5,34 @@ from wgan.model import WGAN
 from sngan.generator_gumbel import GumbelGenerator
 
 def get_model(flags, logdir, noise):
+    
+    # 1. Configure the Architecture based on flags
     if flags.model_type == "wgan":
-        if flags.architecture == "gumbel":
-            protein_model = Protein(flags, logdir)
-            # TODO: implement toggle for gumbel
-        else:
-            protein_model = Protein(flags, logdir)
-        return WGAN(protein_model, noise)
-
+        print(">>> CONFIGURING FOR WGAN-GP (LayerNorm=ON, SN=OFF, GP=ON)")
+        use_sn = False
+        use_ln = True
+        lambda_gp = 20.0  # High penalty for stability
+        
     elif flags.model_type == "sngan":
-        raise NotImplementedError("SNGAN support not yet added back.")
+        print(">>> CONFIGURING FOR SNGAN (LayerNorm=OFF, SN=ON, GP=OFF)")
+        use_sn = True
+        use_ln = False
+        lambda_gp = 0.0   # No gradient penalty
+    else:
+        raise NotImplementedError(f"Unknown model_type: {flags.model_type}")
 
-    raise NotImplementedError("Unknown model_type or architecture.")
+    # 2. Instantiate the wrapper (Protein/WGAN)
+    flags.use_sn = use_sn
+    flags.use_ln = use_ln
+    
+    # Create the base model structure
+    protein_model = Protein(flags, logdir)
 
+    # 3. Return the Trainer Wrapper
+    # Pass the calculated lambda_gp here
+    return WGAN(protein_model, noise)
 
+    
 def get_specific_hooks(flags, logdir):
     hooks = []
     return hooks

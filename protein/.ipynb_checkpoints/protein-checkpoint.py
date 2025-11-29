@@ -17,7 +17,7 @@ class Protein(object):
         self.g_model = GumbelGenerator(flags, self.shape)
 
         # === Discriminator (WGAN) ===
-        self.d_model = DiscriminatorModel(flags.df_dim)
+        self.d_model = DiscriminatorModel(flags.df_dim, use_sn=flags.use_sn, use_ln=flags.use_ln)
 
         # Base optimizers
         base_g_optim = tf.keras.optimizers.Adam(
