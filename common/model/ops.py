@@ -105,19 +105,34 @@ class SNLinear(tf.keras.layers.Layer):
 class SNConv2D(tf.keras.layers.Layer):
     """
     Conv2D with spectral normalization on the kernel.
-    Filter variable names match legacy ckpt:
-      w: (kh, kw, in_channels, out_channels)
-      u: (1, out_channels)
+    Updated to support 'dilation_rate'.
     """
     def __init__(self, filters, kernel_size, strides=(1, 1), padding='SAME',
+                 dilation_rate=(1, 1),  # <--- NEW: Explicitly accept this argument
                  power_iterations=1, name=None, **kwargs):
         super().__init__(name=name, **kwargs)
         self.filters = int(filters)
+        
+        # Kernel Size Logic
         if isinstance(kernel_size, (tuple, list)):
             self.kh, self.kw = int(kernel_size[0]), int(kernel_size[1])
         else:
             self.kh = self.kw = int(kernel_size)
-        self.strides = tuple(strides)
+            
+        # Stride Logic (with int/tuple fix)
+        if isinstance(strides, int):
+            self.strides = (strides, strides)
+        else:
+            self.strides = tuple(strides)
+
+        # === DILATION LOGIC (NEW) ===
+        # We must process this so we can pass it to tf.nn.conv2d
+        if isinstance(dilation_rate, int):
+            self.dilation_rate = (dilation_rate, dilation_rate)
+        else:
+            self.dilation_rate = tuple(dilation_rate)
+        # ============================
+
         self.padding = padding.upper()
         self.power_iterations = int(power_iterations)
         self.disable_sn = tf.Variable(False, trainable=False, dtype=tf.bool, name="disable_sn")
@@ -138,7 +153,6 @@ class SNConv2D(tf.keras.layers.Layer):
         super().build(input_shape)
 
     def _spectral_norm(self, w):
-        # reshape to [M, N] with N = out_channels
         w_mat = tf.reshape(w, [-1, self.filters])
         u = tf.stop_gradient(self.u)
         eps = 1e-12
@@ -153,7 +167,15 @@ class SNConv2D(tf.keras.layers.Layer):
     def call(self, x, training=False):
         x = tf.cast(x, self.w.dtype)
         w_use = tf.cond(self.disable_sn, lambda: self.w, lambda: self._spectral_norm(self.w))
-        return tf.nn.conv2d(x, w_use, strides=[1, *self.strides, 1], padding=self.padding)
+        
+        # === PASS DILATIONS TO TF OP ===
+        return tf.nn.conv2d(
+            x, 
+            w_use, 
+            strides=[1, *self.strides, 1], 
+            padding=self.padding,
+            dilations=[1, *self.dilation_rate, 1]  # <--- The Critical Fix
+        )
 
     def enable_sn(self, enabled=True):
         self.disable_sn.assign(not bool(enabled))
@@ -232,13 +254,10 @@ class SNConv2DTranspose(tf.keras.layers.Layer):
 class ResBlock(tf.keras.layers.Layer):
     def __init__(self, hidden_dim, stride, name):
         super().__init__(name=name)
-        # --- Add these two lines ---
         self.hidden_dim = hidden_dim
         self.stride = stride
-        # ---------------------------
-
         self.deconv = SNConv2DTranspose(
-            filters=hidden_dim, kernel_size=(1,3), strides=stride, 
+            filters=hidden_dim, kernel_size=(1,5), strides=stride, 
             padding="SAME", name="deconv", dtype="float32"
         )
         self.bn = BatchNorm(name="bn", dtype="float32")
@@ -248,7 +267,6 @@ class ResBlock(tf.keras.layers.Layer):
         """
         Calculates the output shape of the layer.
         """
-        # Now self.stride and self.hidden_dim are correctly defined
         output_shape = [
             input_shape[0],
             input_shape[1] * self.stride[0],
@@ -258,9 +276,55 @@ class ResBlock(tf.keras.layers.Layer):
         return tf.TensorShape(output_shape)
         
     def call(self, x, training=False):
-        # Your call method is perfect as is.
-        # Note: I'm assuming your SNConv2DTranspose handles the 'training' argument.
-        # If not, it should be `self.deconv(x)`. But usually it's fine.
         x = self.deconv(x, training=training)
         x = self.bn(x, training=training)
         return self.act(x)
+
+#---------------- RefineBlock layer Class-------------------
+class RefineBlock(tf.keras.layers.Layer):
+    """
+    A residual block that does NOT upsample, but uses Dilation 
+    to see long-range context.
+    FIXED: Casts input to float32 to match residual connection.
+    """
+    def __init__(self, filters, dilation, name):
+        super().__init__(name=name)
+        
+        self.conv1 = SNConv2D(
+            filters, 
+            kernel_size=(1, 3), 
+            dilation_rate=(1, dilation), 
+            padding="SAME", 
+            name="conv1",
+            dtype="float32" # Force FP32 vars
+        )
+        self.bn1 = BatchNorm(name="bn1", dtype="float32")
+        self.act = tf.keras.layers.LeakyReLU(alpha=0.2, dtype="float32")
+        
+        self.conv2 = SNConv2D(
+            filters, 
+            kernel_size=(1, 3), 
+            dilation_rate=(1, dilation), 
+            padding="SAME", 
+            name="conv2",
+            dtype="float32" # Force FP32 vars
+        )
+        self.bn2 = BatchNorm(name="bn2", dtype="float32")
+
+    def call(self, x, training=False):
+        # === CRITICAL FIX: Ensure input is FP32 ===
+        # The previous layer (ResBlock) outputs Float16 (Mixed Precision).
+        # We must cast it to Float32 so 'residual + out' works.
+        x = tf.cast(x, tf.float32)
+        
+        residual = x
+        
+        out = self.conv1(x, training=training)
+        out = self.bn1(out, training=training)
+        out = self.act(out)
+        
+        out = self.conv2(out, training=training)
+        out = self.bn2(out, training=training)
+        
+        # Residual connection (Now Float32 + Float32)
+        return self.act(out + residual)

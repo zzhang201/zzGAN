@@ -2,9 +2,8 @@
 import tensorflow as tf
 from tensorflow_probability.python.distributions import RelaxedOneHotCategorical
 from common.model.ops import (
-    SNConv2D, SNConv2DTranspose, SNLinear, FinalBN, BatchNorm, leaky_relu, ResBlock
+    SNConv2D, SNConv2DTranspose, SNLinear, FinalBN, BatchNorm, leaky_relu, ResBlock, RefineBlock
 )
-
 NUM_AMINO_ACIDS = 21 
 
 class GumbelGenerator(tf.keras.Model):
@@ -38,6 +37,14 @@ class GumbelGenerator(tf.keras.Model):
             ) for i, stride in enumerate(self.strides)
         ]
 
+        self.refine_blocks = [
+            RefineBlock(self._get_hidden_dim_for_layer(0), dilation=1, name="refine_0"),
+            RefineBlock(self._get_hidden_dim_for_layer(1), dilation=2, name="refine_1"),
+            RefineBlock(self._get_hidden_dim_for_layer(2), dilation=4, name="refine_2"),
+            RefineBlock(self._get_hidden_dim_for_layer(3), dilation=8, name="refine_3"),
+            RefineBlock(self._get_hidden_dim_for_layer(4), dilation=16, name="refine_4"),
+        ]
+
         self.final_bn  = FinalBN(name="final_bn")
         self.last_conv = SNConv2D(filters=NUM_AMINO_ACIDS, kernel_size=(1, 1),
                                   name="last_conv", dtype="float32")
@@ -61,10 +68,22 @@ class GumbelGenerator(tf.keras.Model):
             return self.starting_dim
             
     def build(self, input_shape):
-        # ... (Same as your original code) ...
+        """
+        Calculates shapes for internal blocks but SKIPS manual build of Attention
+        to allow for 'Lazy Building' (adapting to the GPS channel).
+        """
         h = tf.TensorShape([self.batch_size, *self.initial_shape]) 
         for i, block in enumerate(self.res_blocks):
             h = block.compute_output_shape(h)
+            
+            # --- COMMENTED OUT TO FIX SHAPE ERROR ---
+            # if i == self.attn_block_index:
+            #     b, _, w, c = h
+            #     attn_input_shape = tf.TensorShape([b, w, c])
+            #     if not self.attn.built:
+            #         self.attn.build(...) 
+            # ----------------------------------------
+
         super().build(input_shape)
     
     def get_strides(self):
@@ -83,7 +102,6 @@ class GumbelGenerator(tf.keras.Model):
     
         tau = start_temp * tf.exp(-decay * step)
         return tf.maximum(end_temp, tau)
-
 
     def _add_gps(self, x):
         """
@@ -114,19 +132,22 @@ class GumbelGenerator(tf.keras.Model):
         h = self.noise_fc(z)
         h = tf.reshape(h, (tf.shape(z)[0], *self.initial_shape))  # [B, 1, W0, C]
 
-        # =========================================================
-        # === GPS / POSITIONAL ENCODING (The "Coordinate Grid") ===
-        # =========================================================
-        # === INJECTION 1: The Coarse GPS (Length 5) ===
+        # === INJECTION 1: Coarse GPS ===
         h = self._add_gps(h) 
 
         self.last_attn_scores = None
         
-        # 2. Loop through ResBlocks
+        # Loop through ResBlocks
         for i, block in enumerate(self.res_blocks):
             
-            # === INJECTION 2...N: The Fine GPS ===
-            h = block(h, training=training) # Upsamples (e.g., 5 -> 10)
+            # Upsample
+            h = block(h, training=training) 
+            
+            # 2. Refine (The New Dilated Block)
+            # This looks at the global structure created by the upsample
+            h = self.refine_blocks[i](h, training=training)
+            
+            # === INJECTION 2..N: Fine GPS (Refresh at every layer) ===
             h = self._add_gps(h) 
 
             # Attention Logic
