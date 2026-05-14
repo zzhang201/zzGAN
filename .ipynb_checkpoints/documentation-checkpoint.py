@@ -14,10 +14,6 @@ def setup_logdir(flags, properties):
     with open(os.path.join(logdir, 'properties.json'), 'w') as f:
         json.dump(properties, f, indent=4)
 
-    # 🧼 Optional debug info
-    if 'image_height' in properties:
-        print(f"Image height: {properties['image_height']}")
-
     return logdir
 
 
@@ -67,7 +63,3 @@ def add_gan_scalars(step, g_loss, d_loss, summary_writer):
         tf.summary.scalar("1_loss/generator", g_loss, step=step)
         tf.summary.scalar("1_loss/discriminator", d_loss, step=step)
         summary_writer.flush()
-
-
-# Image visualization no longer needed
-# def add_image_grid(...): ❌ DELETED

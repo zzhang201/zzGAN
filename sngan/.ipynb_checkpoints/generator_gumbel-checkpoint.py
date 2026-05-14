@@ -64,7 +64,10 @@ class GumbelGenerator(tf.keras.Model):
         self.attn_ln = tf.keras.layers.LayerNormalization(name="attn_ln", dtype="float32")
         self.attn_block_index = config.attn_pos 
 
-    def get_temperature(self, training=True):
+    def get_temperature(self, training=True, manual_temp=None):
+        # If we provide a manual override (e.g., 1.0), use it immediately!
+        if manual_temp is not None:
+            return tf.constant(manual_temp, dtype=tf.float32)
         if not training:
             return tf.constant(0.5, dtype=tf.float32)
         start_temp  = tf.constant(1.0, dtype=tf.float32)
@@ -85,7 +88,7 @@ class GumbelGenerator(tf.keras.Model):
         pos = tf.tile(pos, [shape[0], 1, 1, 1])
         return tf.concat([x, pos], axis=-1)
 
-    def call(self, z, training=False, return_hard=False, return_attention=False, return_embedding=False):
+    def call(self, z, training=False, return_hard=False, return_attention=False, return_embedding=False, manual_temp=None):
         z = tf.cast(z, tf.float32)
 
         # 1. Start
@@ -133,6 +136,6 @@ class GumbelGenerator(tf.keras.Model):
         if return_hard:
             return tf.one_hot(tf.argmax(logits, axis=-1), depth=21)
         else:
-            temperature = tf.cast(self.get_temperature(training=training), tf.float32)
+            temperature = tf.cast(self.get_temperature(training=training, manual_temp=manual_temp), tf.float32)
             dist = RelaxedOneHotCategorical(temperature=temperature, logits=logits)
             return dist.sample()

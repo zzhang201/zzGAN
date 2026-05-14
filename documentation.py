@@ -63,7 +63,3 @@ def add_gan_scalars(step, g_loss, d_loss, summary_writer):
         tf.summary.scalar("1_loss/generator", g_loss, step=step)
         tf.summary.scalar("1_loss/discriminator", d_loss, step=step)
         summary_writer.flush()
-
-
-# Image visualization no longer needed
-# def add_image_grid(...): ❌ DELETED
